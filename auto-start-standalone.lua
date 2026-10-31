@@ -843,7 +843,12 @@ local function createProgressionAdapter(library,player,world,options)
             local ok=pcall(function()
                 local path=pathfinding:CreatePath({AgentRadius=2,AgentHeight=5,AgentCanJump=true,WaypointSpacing=6})
                 path:ComputeAsync(r.Position,point)
-                local waypoints=path.Status==Enum.PathStatus.Success and path:GetWaypoints() or {{Position=point}}
+                if path.Status~=Enum.PathStatus.Success then
+                    adapter.navigationMessage="Путь не найден. Ожидаю доступный проход или портал."
+                    return
+                end
+                adapter.navigationMessage=nil
+                local waypoints=path:GetWaypoints()
                 for _,waypoint in ipairs(waypoints) do
                     if token~=generation or not canAct() or root()~=r or h.Health<=0 then return end
                     if waypoint.Action==Enum.PathWaypointAction.Jump then h.Jump=true end
@@ -864,7 +869,7 @@ local function createProgressionAdapter(library,player,world,options)
     end
     local function position(object)
         if object:IsA("BasePart") then return object.Position end
-        if object:IsA("Model") then return object:GetPivot().Position end
+        if object:IsA("Model") then return object.PrimaryPart and object.PrimaryPart.Position or object:GetPivot().Position end
         local part=object:FindFirstChildWhichIsA("BasePart",true)
         return part and part.Position
     end
@@ -872,7 +877,7 @@ local function createProgressionAdapter(library,player,world,options)
         local m=map();local interactive=m and m:FindFirstChild("Interactive")
         local portals=interactive and interactive:FindFirstChild("Portals")
         local nearest,distance;local r=root()
-        if portals then for _,p in ipairs(portals:GetChildren()) do
+        if portals then for _,p in ipairs(portals:GetDescendants()) do
             if p:GetAttribute("Area")==area then
                 local point=position(p);local d=r and point and (r.Position-point).Magnitude or 0
                 if not nearest or d<distance then nearest,distance=p,d end
@@ -915,25 +920,85 @@ local function createProgressionAdapter(library,player,world,options)
     end
     local function usePortal(portal,now)
         local point=position(portal);local r=root()
-        if not point or not r then return end
-        if (r.Position-point).Magnitude>8 then moveTo(approach(point,4),now,3)
+        if not point or not r then return "Жду точку входа портала…" end
+        if library.Variables.Teleporting then return "Жду завершения перехода через портал…" end
+        local destination=portal:GetAttribute("Area")
+        if destination and library.WorldCmds.HasArea(destination) and portal:GetAttribute("Unlocked")~=true then
+            return "Жду готовности открытого портала…"
+        end
+        if (r.Position-point).Magnitude>8 then
+            moveTo(approach(point,4),now,3)
+            return adapter.navigationMessage or "Иду к входу в портал…"
         elseif now>=(travelNext[portal] or 0) and not library.Variables.MessageOpen then
-            if interact(portal) then travelNext[portal]=now+5 end
+            adapter.cancelMovement()
+            if interact(portal) then
+                travelNext[portal]=now+5
+                adapter.log("Использован портал: "..tostring(portal:GetAttribute("Area")))
+            else return "Жду загрузки обработчика портала…" end
         end
+        return "Жду перемещения через портал…"
     end
-    local function returnToHubIfNeeded(point,now)
-        local r=root();local back=portalFor("Fantasy Portals")
-        local backPoint=back and position(back)
-        if r and backPoint and (r.Position-point).Magnitude>180
-            and (r.Position-backPoint).Magnitude<150 and (r.Position-backPoint).Magnitude+60<(r.Position-point).Magnitude then
-            usePortal(back,now);return true
+    local islandNames={
+        ["Ancient Island"]=true,["Samurai Island"]=true,["Candy Island"]=true,
+        ["Haunted Island"]=true,["Hell Island"]=true,["Heaven Island"]=true,
+    }
+    local function islandFor(area)
+        if area=="Heavens Gate" then return "Heaven Island" end
+        return islandNames[area] and area or "hub"
+    end
+    local function currentFantasyIsland(atPoint)
+        local m=map();local markers=m and m:FindFirstChild("Teleports");local r=root()
+        local origin=atPoint or (r and r.Position)
+        local nearest,distance
+        if markers and origin then
+            for _,marker in ipairs(markers:GetChildren()) do
+                local dir=library.Directory.Areas[marker.Name]
+                if marker:IsA("BasePart") and dir and dir.world=="Fantasy" then
+                    local d=(origin-marker.Position).Magnitude
+                    if not nearest or d<distance then nearest,distance=marker.Name,d end
+                end
+            end
         end
-        return false
+        return nearest and islandFor(nearest) or nil
+    end
+    local function routeFantasy(area,now)
+        if library.WorldCmds.Get()~="Fantasy" then return false end
+        local current=currentFantasyIsland();local destination=islandFor(area)
+        if not current then
+            adapter.cancelMovement()
+            return true,"Жду маркеры локаций Fantasy; прямой путь к острову отключён"
+        end
+        if current==destination then return false end
+        if current~="hub" then
+            local back,bestDistance;local r=root()
+            for _,hubArea in ipairs({"Fantasy Portals","Enchanted Forest","Fantasy Shop"}) do
+                local p=portalFor(hubArea);local point=p and position(p)
+                if point and r and currentFantasyIsland(point)==current then
+                    local d=(r.Position-point).Magnitude
+                    if not back or d<bestDistance then back,bestDistance=p,d end
+                end
+            end
+            if not back then
+                adapter.cancelMovement()
+                return true,"На острове не найден обратный портал к Fantasy Portals"
+            end
+            return true,"Возвращаюсь с "..current.." к порталам. "..usePortal(back,now)
+        end
+        local portal=portalFor(destination)
+        if not portal or currentFantasyIsland(position(portal))~="hub" then
+            adapter.cancelMovement()
+            return true,"Жду портал на "..destination.."; идти напрямую через стены не буду"
+        end
+        if not library.WorldCmds.HasArea(destination) then
+            adapter.cancelMovement()
+            return true,"Остров "..destination.." ещё не открыт"
+        end
+        return true,"Переход на "..destination..". "..usePortal(portal,now)
     end
     function adapter.snapshot(route)
         local save=library.Save.Get()
         if not save or not root() or not library.WorldCmds.HasLoaded() then return {ready=false} end
-        if library.Variables.Trading or library.Variables.UsingMachine or library.Variables.UsingCannon
+        if library.Variables.Trading or library.Variables.UsingMachine or library.Variables.UsingCannon or library.Variables.Teleporting
             or (library.Variables.OpeningEgg or 0)>0 then
             adapter.cancelMovement()
             return {ready=false,message="Жду окончания действия в игре…"}
@@ -952,7 +1017,10 @@ local function createProgressionAdapter(library,player,world,options)
         local object=gate or portalFor(area)
         if not object then return false,"Жду появления ворот/портала "..area.."…" end
         local point=position(object);if not point then return false,"Нет точки входа "..area end
-        if returnToHubIfNeeded(point,now) then return false,"Возвращаюсь к порталам для покупки "..area.."…" end
+        -- Покупки островов находятся в хабе. Ворота Heavens Gate — на Heaven Island.
+        local purchaseArea=gate and area or "Fantasy Portals"
+        local routing,message=routeFantasy(purchaseArea,now)
+        if routing then return false,message end
         local r=root();local isPortal=gate==nil
         local radius=isPortal and 8 or 30
         -- Высокие ворота проверяем по горизонтали: их центр бывает выше персонажа.
@@ -1015,6 +1083,8 @@ local function createProgressionAdapter(library,player,world,options)
         local marker=teleports and teleports:FindFirstChild(area)
         local portal=portalFor(area)
         local r=root();if not r then return "Жду персонажа…",false end
+        local routing,routeMessage=routeFantasy(area,now)
+        if routing then return routeMessage,false end
         -- Сначала обслуживаем уже назначенную цель. Новые спавны, расстояние
         -- и истечение 30 секунд не разрешают выбрать вместо неё другой объект.
         if adapter.activeTargetArea()==area then
@@ -1031,11 +1101,6 @@ local function createProgressionAdapter(library,player,world,options)
                 library.Signal.Fire("Group Select Coin",currentCoin)
             end
             return "Фармлю "..tostring(currentCoin:GetAttribute("Name")).."; жду полного разрушения",true
-        end
-        if marker and portal and (r.Position-marker.Position).Magnitude>100 then
-            local portalPoint=position(portal)
-            if not portalPoint or not returnToHubIfNeeded(portalPoint,now) then usePortal(portal,now) end
-            return "Перехожу через портал в "..area.."…",false
         end
         local things=world:FindFirstChild("__THINGS");local coins=things and things:FindFirstChild("Coins")
         local target,distance,priority
@@ -1059,7 +1124,7 @@ local function createProgressionAdapter(library,player,world,options)
         if target then
             if distance>math.min(library.Settings.CoinGrabDistance-2,45) then
                 moveTo(approach(target.POS.Position,12),now,6)
-                return "Иду к фарму в "..area.."…",false
+                return adapter.navigationMessage or ("Иду к фарму в "..area.."…"),false
             end
             adapter.cancelMovement()
             currentCoin=target;coinSentAt=now;coinProgressAt=now;coinHealth=target:GetAttribute("Health")
@@ -1068,11 +1133,8 @@ local function createProgressionAdapter(library,player,world,options)
         end
         if marker then
             if (r.Position-marker.Position).Magnitude>50 then
-                if portal then
-                    local point=position(portal)
-                    if not point or not returnToHubIfNeeded(point,now) then usePortal(portal,now) end
-                else moveTo(ground(marker.Position),now,7) end
-                return "Перехожу к фарму: "..area.."…",false
+                moveTo(ground(marker.Position),now,7)
+                return adapter.navigationMessage or ("Перехожу к фарму: "..area.."…"),false
             end
             return "Жду появления объектов в "..area.."…",false
         end
