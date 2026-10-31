@@ -414,7 +414,7 @@ local function createHeavenUI(gui, player, input)
     stroke(number,Color3.fromRGB(53,28,81),2).ApplyStrokeMode=Enum.ApplyStrokeMode.Contextual
     local bannerPhoto=make("ImageLabel",banner,{Name="BannerPhoto",Size=UDim2.fromScale(1,1),
         BackgroundTransparency=1,ImageColor3=Color3.new(1,1,1),ScaleType=Enum.ScaleType.Crop,
-        Visible=false,ZIndex=6})
+        Visible=true,ImageTransparency=1,ZIndex=6})
     corner(bannerPhoto)
     local registerAsset=type(getcustomasset)=="function" and getcustomasset or getsynasset
     if type(registerAsset)=="function" and type(writefile)=="function" then
@@ -425,11 +425,21 @@ local function createHeavenUI(gui, player, input)
                 if not gui.Parent then return end
                 writefile("echo-psx-banner.png",bytes)
                 bannerPhoto.Image=registerAsset("echo-psx-banner.png")
+                local fetched=false
+                -- Некоторые исполнители не обновляют IsLoaded для custom assets.
+                -- Используем также результат штатной предварительной загрузки.
+                task.spawn(function()
+                    pcall(function()
+                        game:GetService("ContentProvider"):PreloadAsync({bannerPhoto},function(_,status)
+                            if status==Enum.AssetFetchStatus.Success then fetched=true end
+                        end)
+                    end)
+                end)
                 for _=1,80 do
                     if not gui.Parent then return end
-                    if bannerPhoto.IsLoaded then
+                    if bannerPhoto.IsLoaded or fetched then
                         viewport.Visible=false;title.Visible=false;number.Visible=false
-                        bannerPhoto.Visible=true
+                        bannerPhoto.ImageTransparency=0
                         return
                     end
                     task.wait(0.25)
@@ -438,6 +448,8 @@ local function createHeavenUI(gui, player, input)
             end)
             if not ok then warn("[Панель] Баннер: "..tostring(err)..". Проверь banner.png на GitHub.") end
         end)
+    else
+        warn("[Панель] Для картинки баннера нужны writefile и getcustomasset (или getsynasset).")
     end
     local statusCard=card(pages.Home,0,149,262,218,"Status","chart")
     local quickCard=card(pages.Home,276,149,351,218,"Quick Actions","play")
