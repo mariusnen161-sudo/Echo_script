@@ -412,6 +412,33 @@ local function createHeavenUI(gui, player, input)
     local number=label(banner,"99",230,60,165,58,52,Color3.fromRGB(255,214,64),true)
     number.TextXAlignment=Enum.TextXAlignment.Center
     stroke(number,Color3.fromRGB(53,28,81),2).ApplyStrokeMode=Enum.ApplyStrokeMode.Contextual
+    local bannerPhoto=make("ImageLabel",banner,{Name="BannerPhoto",Size=UDim2.fromScale(1,1),
+        BackgroundTransparency=1,ImageColor3=Color3.new(1,1,1),ScaleType=Enum.ScaleType.Crop,
+        Visible=false,ZIndex=6})
+    corner(bannerPhoto)
+    local registerAsset=type(getcustomasset)=="function" and getcustomasset or getsynasset
+    if type(registerAsset)=="function" and type(writefile)=="function" then
+        task.spawn(function()
+            local ok,err=pcall(function()
+                local bytes=game:HttpGet("https://raw.githubusercontent.com/mariusnen161-sudo/Echo_script/main/banner.png")
+                assert(type(bytes)=="string" and bytes:sub(1,8)=="\137PNG\r\n\26\n","banner.png не найден или не является PNG")
+                if not gui.Parent then return end
+                writefile("echo-psx-banner.png",bytes)
+                bannerPhoto.Image=registerAsset("echo-psx-banner.png")
+                for _=1,80 do
+                    if not gui.Parent then return end
+                    if bannerPhoto.IsLoaded then
+                        viewport.Visible=false;title.Visible=false;number.Visible=false
+                        bannerPhoto.Visible=true
+                        return
+                    end
+                    task.wait(0.25)
+                end
+                error("Изображение баннера не загрузилось в Roblox")
+            end)
+            if not ok then warn("[Панель] Баннер: "..tostring(err)..". Проверь banner.png на GitHub.") end
+        end)
+    end
     local statusCard=card(pages.Home,0,149,262,218,"Status","chart")
     local quickCard=card(pages.Home,276,149,351,218,"Quick Actions","play")
     local function row(parent,title,y)
