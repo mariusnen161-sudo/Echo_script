@@ -186,6 +186,7 @@ local function createHeavenUI(gui, player, input)
     local function fit()
         local camera=workspace.CurrentCamera
         if camera then scale.Scale=math.min(ui.scale,(camera.ViewportSize.X-32)/850,(camera.ViewportSize.Y-32)/530) end
+        if ui.clampRestore then ui.clampRestore() end
     end
     local function bindCamera()
         fit()
@@ -309,8 +310,12 @@ local function createHeavenUI(gui, player, input)
     local farmCard=card(pages.Farming,0,94,627,168,"Автоматический фарм","pick")
     action(farmCard,"Пауза / продолжить","play",16,66,278,46,"farm")
     local farmInfo=label(farmCard,"Жду сундук…",16,123,595,32,13,Theme.muted)
-    local safety=card(pages.Farming,0,278,627,116,"Защита от повторных отправок","shield")
-    label(safety,"Один запрос на каждый новый сундук. Повтор разрешён после его исчезновения минимум на 1,25 секунды.",16,58,593,44,14,Theme.muted)
+    local progressionCard=card(pages.Farming,0,278,627,178,"Автопрогрессия: Spawn → Heavens Gate","pin")
+    local progressionInfo=label(progressionCard,"Нажми «Начать», чтобы фармить и открывать следующие зоны за монеты.",16,56,593,58,13,Theme.muted)
+    action(progressionCard,"Начать прогрессию","play",16,124,288,38,"progression")
+    action(progressionCard,"Только небесный сундук","coin",320,124,290,38,"chestmode")
+    local safety=card(pages.Farming,0,472,627,144,"Приоритет целей","shield")
+    label(safety,"Сундуки → большие сейфы → сейфы → подарки → ящики → монеты. Текущая цель сначала разрушается полностью, затем выбирается следующая. Переход в новую зону также ждёт конца атаки.",16,57,593,72,14,Theme.muted)
     heading(pages.Pets,"Pets","Информация из текущего сохранения игры")
     local petCard=card(pages.Pets,0,94,627,120,"Твои питомцы","paw")
     local petsInfo=label(petCard,"Жду данные игры…",16,57,595,47,15)
@@ -325,7 +330,7 @@ local function createHeavenUI(gui, player, input)
     local boostList=label(pages.Boosts,"",10,275,602,128,14,Theme.muted)
     heading(pages.Teleport,"Teleport","Текущая цель и доступность переходов")
     local location=card(pages.Teleport,0,94,627,154,"Heavens Gate","pin")
-    label(location,"Цель: Grand Heaven Chest\nАвтоматическая телепортация не подключена. Используй штатное меню игры, затем подойди к сундуку.",16,60,593,72,15,Theme.muted)
+    label(location,"Маршрут прогрессии: Spawn → Fantasy → Heavens Gate. Режим использует ворота, пушку и порталы игры. Запуск находится во вкладке Farming.",16,60,593,72,15,Theme.muted)
     heading(pages.Misc,"Misc","Дополнительные работающие функции")
     local afkCard=card(pages.Misc,0,94,627,152,"Анти-AFK","shield")
     local afkInfo=label(afkCard,"Жду проверки…",16,57,593,33,14,Theme.muted)
@@ -360,22 +365,55 @@ local function createHeavenUI(gui, player, input)
     restoreIcon.Name="RestoreIcon"
     restoreIcon.Visible=false
     icon(restoreIcon,"paw",13,11,38,Theme.lavender)
+    local iconPlaced,iconMoved=false,false
+    local iconPointer,iconStart,iconOrigin
+    local function clampIcon(x,y)
+        local size=workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(1280,720)
+        return UDim2.fromOffset(math.clamp(x,8,math.max(8,size.X-72)),math.clamp(y,8,math.max(8,size.Y-72)))
+    end
+    function ui.clampRestore()
+        if iconPlaced then restoreIcon.Position=clampIcon(restoreIcon.Position.X.Offset,restoreIcon.Position.Y.Offset) end
+    end
+    connect(restoreIcon.InputBegan,function(e)
+        if e.UserInputType==Enum.UserInputType.MouseButton1 or e.UserInputType==Enum.UserInputType.Touch then
+            iconPointer=e; iconStart=e.Position; iconOrigin=restoreIcon.Position; iconMoved=false
+        end
+    end)
+    connect(input.InputChanged,function(e)
+        if not iconPointer then return end
+        local mouse=iconPointer.UserInputType==Enum.UserInputType.MouseButton1 and e.UserInputType==Enum.UserInputType.MouseMovement
+        local touch=iconPointer.UserInputType==Enum.UserInputType.Touch and e==iconPointer
+        if not mouse and not touch then return end
+        local dx,dy=e.Position.X-iconStart.X,e.Position.Y-iconStart.Y
+        if dx*dx+dy*dy>=36 then iconMoved=true end
+        if iconMoved then
+            iconPlaced=true
+            restoreIcon.Position=clampIcon(iconOrigin.X.Offset+dx,iconOrigin.Y.Offset+dy)
+        end
+    end)
+    connect(input.InputEnded,function(e)
+        if iconPointer and (e==iconPointer or (iconPointer.UserInputType==Enum.UserInputType.MouseButton1 and e.UserInputType==Enum.UserInputType.MouseButton1)) then
+            iconPointer=nil
+        end
+    end)
     function ui.collapse()
         collapsed=not collapsed
         notification.Visible=false
-        if collapsed then
+        if collapsed and not iconPlaced then
             local viewportSize=workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(1280,720)
             local left=root.Position.X.Scale*viewportSize.X+root.Position.X.Offset-850*scale.Scale/2
             local top=root.Position.Y.Scale*viewportSize.Y+root.Position.Y.Offset-530*scale.Scale/2
             restoreIcon.Position=UDim2.fromOffset(
                 math.clamp(left,8,math.max(8,viewportSize.X-72)),
                 math.clamp(top,8,math.max(8,viewportSize.Y-72)))
+            iconPlaced=true
         end
+        ui.clampRestore()
         root.Visible=not collapsed
         restoreIcon.Visible=collapsed
     end
     connect(minimize.Activated,ui.collapse)
-    connect(restoreIcon.Activated,function() if collapsed then ui.collapse() end end)
+    connect(restoreIcon.Activated,function() if collapsed and not iconMoved then ui.collapse() end end)
     local dragStart,dragOrigin
     connect(header.InputBegan,function(e)
         if e.UserInputType==Enum.UserInputType.MouseButton1 or e.UserInputType==Enum.UserInputType.Touch then
@@ -401,7 +439,16 @@ local function createHeavenUI(gui, player, input)
     local function setStatus(o,on) o.Text=on and "ON" or "OFF"; o.TextColor3=on and Theme.green or Theme.red end
     function ui.update(state)
         statusLabel.Text=state.message
-        farmInfo.Text=state.message
+        farmInfo.Text=(state.mode=="progression" and "Автопрогрессия: " or "Небесный сундук: ")..state.message
+        local progress=state.progression
+        if progress then
+            local summary="Фарм: "..tostring(progress.targetArea or "Town")
+            if progress.nextArea then summary=summary.."\nДальше: "..progress.nextArea end
+            if progress.price and progress.currency then
+                summary=summary.." · "..string.format("%.0f",progress.balance or 0).." / "..string.format("%.0f",progress.price).." "..progress.currency
+            end
+            progressionInfo.Text=summary.."\n"..tostring(progress.message or "")
+        end
         setStatus(farming,state.running); setStatus(hatch,false)
         farmButton.Text=state.running and "Pause Farming" or "Start Farming"
         boostButton.Text=state.autoBoost and "Triple Coins: ON" or "Triple Coins: OFF"
@@ -456,7 +503,14 @@ end)()(gui, player, UserInputService)
 local uiConnections = UI.connections
 local stopButton, closeButton = UI.stopButton, UI.closeButton
 local collapse = UI.collapse
-local running, alive = true, true
+local running, alive = false, true
+local farmMode,progressionState,progression = "progression",nil,nil
+local controllerState=playerGui:FindFirstChild("HeavenChestAutoStart")
+if controllerState then
+    local savedMode=controllerState:GetAttribute("FarmMode")
+    if savedMode=="chest" or savedMode=="progression" then farmMode=savedMode end
+    running=controllerState:GetAttribute("FarmRunning")==true
+end
 local autoBoostEnabled, afkEnabled = true, true
 local uiStartedAt = os.clock()
 local boostText = "Triple Coins: ожидание проверки"
@@ -478,14 +532,28 @@ local keyConnection, idleConnection
 local lastStatus, lastStatusAt = "Инициализация", os.clock()
 local function status(text)
     lastStatus, lastStatusAt = text, os.clock()
+    local controller=playerGui:FindFirstChild("HeavenChestAutoStart")
+    if controller then controller:SetAttribute("FarmMode",farmMode);controller:SetAttribute("FarmRunning",running) end
     if alive then
         UI.update({message=text, running=running, autoBoost=autoBoostEnabled, afkEnabled=afkEnabled,
             boostText=boostText, afkText=afkText, elapsed=os.clock()-uiStartedAt,
-            logFile=logAvailable and logFile or "Файл диагностики недоступен"})
+            logFile=logAvailable and logFile or "Файл диагностики недоступен",mode=farmMode,progression=progressionState})
     end
 end
 UI.bind("farm",function()
-    running=not running; status(running and "Фарм возобновлён" or "Фарм на паузе")
+    running=not running
+    if progression then if running then progression.reset() else progression.cancel() end end
+    status(running and "Фарм возобновлён" or "Фарм на паузе")
+end)
+UI.bind("progression",function()
+    farmMode="progression";running=true
+    if progression then progression.reset() end
+    status("Запускаю прогрессию: Spawn → Heavens Gate")
+end)
+UI.bind("chestmode",function()
+    if progression then progression.cancel() end
+    farmMode="chest";running=true
+    status("Режим небесного сундука: подойди к сундуку")
 end)
 UI.bind("boost",function()
     autoBoostEnabled=not autoBoostEnabled; status(lastStatus)
@@ -504,6 +572,7 @@ local function stop()
     if not alive then return end
     gui:SetAttribute("StopReason", "Остановка подтверждена кнопкой")
     alive = false
+    if progression then progression.cancel() end
     if keyConnection then keyConnection:Disconnect() end
     if idleConnection then idleConnection:Disconnect() end
     if gui.Parent then gui:Destroy() end
@@ -518,6 +587,7 @@ gui.Destroying:Connect(function()
         warn("[Сундук] Панель уничтожена извне. Скрипт остановлен; кнопка остановки не нажималась.")
     end
     alive = false
+    if progression then progression.cancel() end
     if keyConnection then keyConnection:Disconnect() end
     if idleConnection then idleConnection:Disconnect() end
 end)
@@ -556,6 +626,7 @@ keyConnection = UserInputService.InputBegan:Connect(function(input, processed)
     if not processed and input.KeyCode == Enum.KeyCode.F7 then collapse() end
     if not processed and input.KeyCode == Enum.KeyCode.F8 then
         running = not running
+        if progression then if running then progression.reset() else progression.cancel() end end
         status(running and "Работа возобновлена" or "Пауза")
     end
 end)
@@ -720,10 +791,445 @@ local function main()
             warn("[Сундук] Ошибка Triple Coins: " .. tostring(err))
         end
     end
+    -- BEGIN PROGRESSION MODULES
+local createProgressionAdapter=(function()
+-- Адаптер исследованной копии PSX: штатные BindableEvent/Signal покупки и перехода.
+-- Не покупает телепорты, gamepass или предметы за Robux.
+local function createProgressionAdapter(library,player,world,options)
+    local adapter={}
+    local pathfinding=game:GetService("PathfindingService")
+    local generation=0
+    local moveGoal,moveBusy,nextMoveRetry=nil,false,0
+    local currentCoin,coinSentAt,coinHealth,coinProgressAt
+    local travelNext,travelAttempts={},{}
+    local function root() return player.Character and player.Character:FindFirstChild("HumanoidRootPart") end
+    local function humanoid() return player.Character and player.Character:FindFirstChildWhichIsA("Humanoid") end
+    local function map() return world:FindFirstChild("__MAP") end
+    local function canAct() return options.canAct() end
+    function adapter.log(message) options.log("[Прогрессия] "..message) end
+    function adapter.cancelMovement()
+        generation=generation+1;moveBusy=false;moveGoal=nil
+        local h,r=humanoid(),root()
+        if h and r then h:MoveTo(r.Position) end
+    end
+    function adapter.reset()
+        travelNext={};travelAttempts={};nextMoveRetry=0
+    end
+    local function ground(point)
+        local params=RaycastParams.new()
+        params.FilterType=Enum.RaycastFilterType.Include
+        params.FilterDescendantsInstances=map() and {map()} or {}
+        local hit=world:Raycast(point+Vector3.new(0,80,0),Vector3.new(0,-200,0),params)
+        return hit and hit.Position+Vector3.new(0,3,0) or point+Vector3.new(0,3,0)
+    end
+    local function approach(point,distance)
+        local r=root();if not r then return point end
+        local d=Vector3.new(r.Position.X-point.X,0,r.Position.Z-point.Z)
+        if d.Magnitude<0.1 then d=Vector3.new(0,0,1) end
+        return ground(point+d.Unit*distance)
+    end
+    local function moveTo(point,now,threshold)
+        local r,h=root(),humanoid()
+        if not r or not h or h.Health<=0 then return false,"Жду персонажа…" end
+        if (r.Position-point).Magnitude<=(threshold or 7) then
+            if moveBusy then adapter.cancelMovement() end
+            return true
+        end
+        if moveBusy and moveGoal and (moveGoal-point).Magnitude<7 then return false end
+        if now<nextMoveRetry then return false end
+        adapter.cancelMovement();moveGoal=point;moveBusy=true
+        local token=generation
+        task.spawn(function()
+            local ok=pcall(function()
+                local path=pathfinding:CreatePath({AgentRadius=2,AgentHeight=5,AgentCanJump=true,WaypointSpacing=6})
+                path:ComputeAsync(r.Position,point)
+                local waypoints=path.Status==Enum.PathStatus.Success and path:GetWaypoints() or {{Position=point}}
+                for _,waypoint in ipairs(waypoints) do
+                    if token~=generation or not canAct() or root()~=r or h.Health<=0 then return end
+                    if waypoint.Action==Enum.PathWaypointAction.Jump then h.Jump=true end
+                    h:MoveTo(waypoint.Position)
+                    local untilTime=os.clock()+5
+                    while (r.Position-waypoint.Position).Magnitude>5 and os.clock()<untilTime do
+                        if token~=generation or not canAct() or root()~=r then return end
+                        task.wait(0.15)
+                    end
+                    if (r.Position-waypoint.Position).Magnitude>8 then return end
+                end
+            end)
+            if token==generation then
+                moveBusy=false;nextMoveRetry=os.clock()+(ok and 1 or 4)
+            end
+        end)
+        return false
+    end
+    local function position(object)
+        if object:IsA("BasePart") then return object.Position end
+        if object:IsA("Model") then return object:GetPivot().Position end
+        local part=object:FindFirstChildWhichIsA("BasePart",true)
+        return part and part.Position
+    end
+    local function portalFor(area)
+        local m=map();local interactive=m and m:FindFirstChild("Interactive")
+        local portals=interactive and interactive:FindFirstChild("Portals")
+        local nearest,distance;local r=root()
+        if portals then for _,p in ipairs(portals:GetChildren()) do
+            if p:GetAttribute("Area")==area then
+                local point=position(p);local d=r and point and (r.Position-point).Magnitude or 0
+                if not nearest or d<distance then nearest,distance=p,d end
+            end
+        end end
+        return nearest
+    end
+    local function interact(object)
+        local host=object:IsA("Model") and object.PrimaryPart or object
+        local event=host and host:FindFirstChild("Activated")
+        if not event or not event:IsA("BindableEvent") then return false end
+        event:Fire();return true
+    end
+    local function targetPriority(coin)
+        local name=string.lower(tostring(coin:GetAttribute("Name") or ""))
+        local function has(word) return string.find(name,word,1,true)~=nil end
+        if has("chest") then
+            if has("grand") or has("giant") or has("super") or has("large") then return 1 end
+            if has("small") then return 3 end
+            return 2
+        end
+        if has("vault") or has("large safe") or has("big safe") then return 4 end
+        if has("safe") then return 5 end
+        if has("present") or has("gift") then return 6 end
+        if has("crate") then return 7 end
+        if has("large coins") then return 8 end
+        if has("tiny coins") or has("small coins") then return 10 end
+        if has("coin") then return 9 end
+        return 11
+    end
+    function adapter.activeTargetArea()
+        local things=world:FindFirstChild("__THINGS")
+        local folder=things and things:FindFirstChild("Coins")
+        if currentCoin and currentCoin.Parent==folder and currentCoin:FindFirstChild("POS") then
+            local health=currentCoin:GetAttribute("Health")
+            if type(health)~="number" or health>0 then return currentCoin:GetAttribute("Area") end
+        end
+        currentCoin=nil
+        return nil
+    end
+    local function usePortal(portal,now)
+        local point=position(portal);local r=root()
+        if not point or not r then return end
+        if (r.Position-point).Magnitude>8 then moveTo(approach(point,4),now,3)
+        elseif now>=(travelNext[portal] or 0) and not library.Variables.MessageOpen then
+            if interact(portal) then travelNext[portal]=now+5 end
+        end
+    end
+    local function returnToHubIfNeeded(point,now)
+        local r=root();local back=portalFor("Fantasy Portals")
+        local backPoint=back and position(back)
+        if r and backPoint and (r.Position-point).Magnitude>180
+            and (r.Position-backPoint).Magnitude<150 and (r.Position-backPoint).Magnitude+60<(r.Position-point).Magnitude then
+            usePortal(back,now);return true
+        end
+        return false
+    end
+    function adapter.snapshot(route)
+        local save=library.Save.Get()
+        if not save or not root() or not library.WorldCmds.HasLoaded() then return {ready=false} end
+        if library.Variables.Trading or library.Variables.UsingMachine or library.Variables.UsingCannon
+            or (library.Variables.OpeningEgg or 0)>0 then
+            adapter.cancelMovement()
+            return {ready=false,message="Жду окончания действия в игре…"}
+        end
+        if library.Shared.IsHardcore then return {ready=false,message="Режим прогрессии пока рассчитан на обычный PSX, без Hardcore"} end
+        local owned={}
+        for _,zone in ipairs(route) do
+            if library.Directory.Areas[zone.name] then owned[zone.name]=library.WorldCmds.HasArea(zone.name) end
+        end
+        return {ready=true,world=library.WorldCmds.Get(),owned=owned,areas=library.Directory.Areas,currency=save}
+    end
+    function adapter.preparePurchase(area,now)
+        if library.Variables.MessageOpen then return false,"Жду закрытия окна игры…" end
+        local m=map();local gates=m and m:FindFirstChild("Gates")
+        local gate=gates and gates:FindFirstChild(area)
+        local object=gate or portalFor(area)
+        if not object then return false,"Жду появления ворот/портала "..area.."…" end
+        local point=position(object);if not point then return false,"Нет точки входа "..area end
+        if returnToHubIfNeeded(point,now) then return false,"Возвращаюсь к порталам для покупки "..area.."…" end
+        local r=root();local isPortal=gate==nil
+        local radius=isPortal and 8 or 30
+        -- Высокие ворота проверяем по горизонтали: их центр бывает выше персонажа.
+        local d=Vector3.new(r.Position.X-point.X,0,r.Position.Z-point.Z).Magnitude
+        if d>radius then moveTo(approach(point,isPortal and 5 or 18),now,5);return false,"Иду к покупке "..area.."…" end
+        adapter.cancelMovement()
+        return true,"Открываю покупку "..area.."…"
+    end
+    function adapter.beginPurchase(purchase)
+        local m=map();local gates=m and m:FindFirstChild("Gates")
+        local gate=gates and gates:FindFirstChild(purchase.name)
+        if gate then library.Signal.Fire("Attempt Buy Gate",gate);return true end
+        local portal=portalFor(purchase.name)
+        if portal and interact(portal) then return true end
+        return false,"Обработчик покупки "..purchase.name.." не найден"
+    end
+    function adapter.confirmPurchase(purchase)
+        local message=library.GUI.Message
+        if not message or not message.Gui.Enabled then return nil end
+        local amount=library.Functions.Commas(purchase.cost)
+        local actual=message.Desc.Text
+        local gateText="Are you sure you want to buy this area for "..amount.." "..purchase.currency.."?"
+        local portalText="Buy this area for "..amount.." "..purchase.currency.."?"
+        if actual~=gateText and actual~=portalText then return "Открыто другое окно; покупка зоны ожидает" end
+        -- Повторно проверяем баланс и открытие непосредственно перед Yes.
+        local save=library.Save.Get()
+        if not save or (save[purchase.currency] or 0)<purchase.cost then return "Недостаточно монет для подтверждения" end
+        if library.WorldCmds.HasArea(purchase.name) then return nil end
+        if not purchase.confirmed and message.Yes.Visible and message.Yes.Active then
+            assert(options.queueButton(message.Yes),"Кнопка Yes покупки недоступна")
+            purchase.confirmed=true
+            adapter.log("Подтверждена покупка "..purchase.name.." за "..amount.." "..purchase.currency)
+        end
+        return "Покупаю "..purchase.name.."; жду открытия зоны…"
+    end
+    function adapter.travelWorld(destination,now)
+        if library.WorldCmds.Get()==destination then travelAttempts[destination]=0;return "Мир загружен" end
+        if not library.WorldCmds.HasAccess(destination) then return "Мир "..destination.." ещё недоступен" end
+        local m=map();local cannons=m and m:FindFirstChild("Cannons")
+        local cannon=cannons and cannons:FindFirstChild(destination)
+        if not cannon then return "В текущем мире не найдена пушка в "..destination end
+        local r=root();if not r then return "Жду персонажа…" end
+        if (r.Position-cannon.Position).Magnitude>22 then
+            moveTo(approach(cannon.Position,10),now,6)
+            return "Иду к пушке в "..destination.."…"
+        end
+        adapter.cancelMovement()
+        if now<(travelNext[destination] or 0) then return "Жду перехода в "..destination.."…" end
+        if (travelAttempts[destination] or 0)>=3 then return "Переход не подтверждён. Проверь окно игры и включи прогрессию повторно" end
+        if library.Variables.MessageOpen or not library.WorldCmds.CanDoAction() then return "Жду готовности перехода…" end
+        if interact(cannon) then
+            travelAttempts[destination]=(travelAttempts[destination] or 0)+1
+            travelNext[destination]=now+30
+            adapter.log("Запрошена пушка в "..destination)
+        end
+        return "Перехожу в "..destination.."…"
+    end
+    function adapter.farm(area,now)
+        local m=map();local teleports=m and m:FindFirstChild("Teleports")
+        local marker=teleports and teleports:FindFirstChild(area)
+        local portal=portalFor(area)
+        local r=root();if not r then return "Жду персонажа…",false end
+        -- Сначала обслуживаем уже назначенную цель. Новые спавны, расстояние
+        -- и истечение 30 секунд не разрешают выбрать вместо неё другой объект.
+        if adapter.activeTargetArea()==area then
+            local health=currentCoin:GetAttribute("Health")
+            local point=currentCoin.POS.Position
+            if health~=coinHealth then coinHealth=health;coinProgressAt=now end
+            if (r.Position-point).Magnitude>library.Settings.CoinGrabDistance then
+                moveTo(approach(point,12),now,6)
+                return "Возвращаюсь к текущей цели в "..area.."…",false
+            end
+            -- Если атака не началась, повторяем назначение только ТОЙ ЖЕ цели.
+            if now-(coinProgressAt or coinSentAt or now)>=30 and now-(coinSentAt or now)>=30 then
+                coinSentAt=now
+                library.Signal.Fire("Group Select Coin",currentCoin)
+            end
+            return "Фармлю "..tostring(currentCoin:GetAttribute("Name")).."; жду полного разрушения",true
+        end
+        if marker and portal and (r.Position-marker.Position).Magnitude>100 then
+            local portalPoint=position(portal)
+            if not portalPoint or not returnToHubIfNeeded(portalPoint,now) then usePortal(portal,now) end
+            return "Перехожу через портал в "..area.."…",false
+        end
+        local things=world:FindFirstChild("__THINGS");local coins=things and things:FindFirstChild("Coins")
+        local target,distance,priority
+        if coins then
+            for _,coin in ipairs(coins:GetChildren()) do
+                local pos=coin:FindFirstChild("POS");local model=coin:FindFirstChild("Coin")
+                local health=coin:GetAttribute("Health")
+                local coinDir=library.Directory.Coins[coin:GetAttribute("Name")]
+                local worldDir=library.Directory.Worlds[library.Directory.Areas[area].world]
+                if coinDir and coinDir.currencyType==worldDir.mainCurrency
+                    and coin:GetAttribute("Area")==area and coin:GetAttribute("ID")~=nil and pos and model
+                    and not model:GetAttribute("PreventClick") and (type(health)~="number" or health>0) then
+                    local d=(r.Position-pos.Position).Magnitude
+                    local rank=targetPriority(coin)
+                    if not target or rank<priority or (rank==priority and d<distance) then
+                        target,distance,priority=coin,d,rank
+                    end
+                end
+            end
+        end
+        if target then
+            if distance>math.min(library.Settings.CoinGrabDistance-2,45) then
+                moveTo(approach(target.POS.Position,12),now,6)
+                return "Иду к фарму в "..area.."…",false
+            end
+            adapter.cancelMovement()
+            currentCoin=target;coinSentAt=now;coinProgressAt=now;coinHealth=target:GetAttribute("Health")
+            library.Signal.Fire("Group Select Coin",target)
+            return "Петы отправлены: "..tostring(target:GetAttribute("Name")),true
+        end
+        if marker then
+            if (r.Position-marker.Position).Magnitude>50 then
+                if portal then
+                    local point=position(portal)
+                    if not point or not returnToHubIfNeeded(point,now) then usePortal(portal,now) end
+                else moveTo(ground(marker.Position),now,7) end
+                return "Перехожу к фарму: "..area.."…",false
+            end
+            return "Жду появления объектов в "..area.."…",false
+        end
+        return "Жду точки фарма "..area.."…",false
+    end
+    return adapter
+end
+return createProgressionAdapter
+end)()
+local createProgression=(function()
+-- Планировщик прогрессии. Все действия выполняет переданный адаптер игры.
+local function createProgression(adapter)
+    local route={
+        {name="Town",world="Spawn"},{name="Forest",world="Spawn"},
+        {name="Beach",world="Spawn"},{name="Mine",world="Spawn"},
+        {name="Winter",world="Spawn"},{name="Glacier",world="Spawn"},
+        {name="Desert",world="Spawn"},{name="Volcano",world="Spawn"},
+        {name="Cave",world="Spawn",noFarm=true},
+        {name="Enchanted Forest",world="Fantasy"},
+        {name="Fantasy Portals",world="Fantasy",noFarm=true},
+        {name="Ancient Island",world="Fantasy"},{name="Samurai Island",world="Fantasy"},
+        {name="Candy Island",world="Fantasy"},{name="Haunted Island",world="Fantasy"},
+        {name="Hell Island",world="Fantasy"},{name="Heaven Island",world="Fantasy"},
+        {name="Heavens Gate",world="Fantasy"},
+    }
+    local self={pending=nil,failed=false,state={message="Прогрессия готова",targetArea="Town"}}
+    local function fail(message)
+        self.failed=true; adapter.cancelMovement()
+        self.state.message="Прогрессия остановлена: "..message
+    end
+    function self.cancel() adapter.cancelMovement() end
+    function self.reset()
+        self.failed=false
+        -- Не забываем отправленную покупку: после паузы сначала проверим её результат.
+        adapter.cancelMovement()
+        if adapter.reset then adapter.reset() end
+    end
+    local function tick(now)
+        if self.failed then return self.state end
+        local snapshot=adapter.snapshot(route)
+        if not snapshot.ready then self.state.message=snapshot.message or "Жду загрузки игры…";return self.state end
+        local target,nextZone
+        for _,zone in ipairs(route) do
+            if not snapshot.owned[zone.name] then nextZone=zone;break end
+            if not zone.noFarm then target=zone end
+        end
+        self.state.targetArea=target and target.name or "Town"
+        self.state.nextArea=nextZone and nextZone.name or nil
+        self.state.nearChest=false
+        self.state.completed=nextZone==nil
+        self.state.price=nil;self.state.currency=nil;self.state.balance=nil
+        if self.pending then
+            local purchase=self.pending
+            self.state.price=purchase.cost;self.state.currency=purchase.currency;self.state.balance=snapshot.currency[purchase.currency]
+            if snapshot.owned[purchase.name] then
+                adapter.log("Открыта зона: "..purchase.name)
+                self.pending=nil;adapter.cancelMovement()
+            elseif now-purchase.started>=35 then
+                self.pending=nil
+                fail("нет подтверждения покупки "..purchase.name..". Проверь окно игры и включи режим повторно.")
+                return self.state
+            else
+                local confirmed=adapter.confirmPurchase(purchase)
+                self.state.message=confirmed or ("Жду подтверждения открытия "..purchase.name.."…")
+                return self.state
+            end
+        end
+        -- Не уводим петов даже ради покупки следующей зоны до конца их атаки.
+        local activeArea=adapter.activeTargetArea and adapter.activeTargetArea()
+        if activeArea then
+            self.state.targetArea=activeArea
+            local nextDir=nextZone and snapshot.areas[nextZone.name]
+            if nextDir and nextDir.gate then
+                self.state.price=nextDir.gate.cost;self.state.currency=nextDir.gate.currency
+                self.state.balance=snapshot.currency[nextDir.gate.currency]
+            end
+            local message,near=adapter.farm(activeArea,now)
+            self.state.message=message
+            self.state.nearChest=activeArea=="Heavens Gate" and near==true
+            return self.state
+        end
+        if nextZone then
+            local dir=snapshot.areas[nextZone.name]
+            if not dir then fail("нет описания зоны "..nextZone.name);return self.state end
+            if snapshot.world~=nextZone.world then
+                if not target or target.world==nextZone.world or (target.name=="Cave" or snapshot.owned.Cave) then
+                    self.state.message=adapter.travelWorld(nextZone.world,now)
+                    return self.state
+                end
+            end
+            if dir.gate then
+                local cost,currency=dir.gate.cost,dir.gate.currency
+                if type(cost)~="number" or cost<0 or type(currency)~="string" then fail("неизвестная цена зоны");return self.state end
+                if currency~="Coins" and currency~="Fantasy Coins" then fail("неожиданная валюта "..currency);return self.state end
+                local balance=snapshot.currency[currency]
+                if type(balance)~="number" then self.state.message="Жду баланс "..currency;return self.state end
+                self.state.price=cost;self.state.currency=currency;self.state.balance=balance
+                if balance>=cost and snapshot.world==nextZone.world then
+                    local ready,message=adapter.preparePurchase(nextZone.name,now)
+                    self.state.message=message
+                    if ready then
+                        local purchase={name=nextZone.name,cost=cost,currency=currency,started=now}
+                        self.pending=purchase
+                        local sent,reason=adapter.beginPurchase(purchase)
+                        if not sent then self.pending=nil;fail(reason or "не удалось открыть покупку") end
+                    end
+                    return self.state
+                end
+            elseif snapshot.world==nextZone.world then
+                self.state.message="Жду открытия стартовой зоны "..nextZone.name.." после перехода…"
+                return self.state
+            end
+        else
+            self.state.price=nil;self.state.currency=nil;self.state.balance=nil
+        end
+        if not target then self.state.message="Не открыта начальная зона Town";return self.state end
+        if snapshot.world~=target.world then
+            self.state.message=adapter.travelWorld(target.world,now)
+            return self.state
+        end
+        local message,near=adapter.farm(target.name,now)
+        self.state.message=message
+        self.state.nearChest=target.name=="Heavens Gate" and near==true
+        self.state.completed=nextZone==nil
+        return self.state
+    end
+    function self.tick(now)
+        local ok,result=pcall(tick,now)
+        if not ok then fail(tostring(result)) end
+        return self.state
+    end
+    return self
+end
+return createProgression
+end)()
+-- END PROGRESSION MODULES
+    local adapter=createProgressionAdapter(library,player,workspace,{
+        canAct=function()
+            return alive and running and farmMode=="progression"
+                and not library.Variables.LoadingWorld and not library.Variables.Trading
+                and not library.Variables.UsingCannon and not library.Variables.UsingMachine
+                and (library.Variables.OpeningEgg or 0)<=0
+        end,
+        queueButton=queueButton,
+        log=function(message) record(message);print(message) end,
+    })
+    progression=createProgression(adapter)
     local count = 0
     while alive do
         gui:SetAttribute("MainHeartbeat", os.clock())
         if running then
+            if farmMode=="progression" then
+                progressionState=progression.tick(os.clock())
+                updateTripleCoins(progressionState.nearChest)
+                if progression.failed then running=false end
+                status(progressionState.message)
+            else
             local folder = workspace:FindFirstChild("__THINGS")
             local coins = folder and folder:FindFirstChild("Coins")
             local message = coins and "Жду Grand Heaven Chest…" or "Жду загрузки объектов игры…"
@@ -795,10 +1301,11 @@ local function main()
                 and (root.Position - lastChestPosition).Magnitude <= math.min(library.Settings.CoinGrabDistance, 100)
             updateTripleCoins(nearChest)
             status(message)
+            end
         else
             cycle.absentSince = nil
         end
-        if not running then status("Фарм на паузе") end
+        if not running then status(farmMode=="progression" and progression and progression.failed and progression.state.message or "Фарм на паузе") end
         task.wait(0.25)
     end
 end
@@ -828,11 +1335,21 @@ local initialSource = embeddedSource
 local compiled, compileError = loadstring(initialSource)
 assert(compiled, compileError)
 local previous = playerGui:FindFirstChild("HeavenChestAutoStart")
+local previousMode=previous and previous:GetAttribute("FarmMode")
+local previousRunning=previous and previous:GetAttribute("FarmRunning")
 if previous then previous:Destroy() end
+-- Повторное выполнение загрузчика должно действительно применять новый код.
+local previousHelper=playerGui:FindFirstChild("HeavenChestHelper")
+if previousHelper then
+    previousHelper:SetAttribute("StopReason","Запущена новая копия скрипта")
+    previousHelper:Destroy()
+end
 local gui = Instance.new("ScreenGui")
 gui.Name = "HeavenChestAutoStart"
 gui.ResetOnSpawn = false
 gui.Parent = playerGui
+if previousMode=="chest" or previousMode=="progression" then gui:SetAttribute("FarmMode",previousMode) end
+if type(previousRunning)=="boolean" then gui:SetAttribute("FarmRunning",previousRunning) end
 local toggle = Instance.new("TextButton")
 toggle.Size = UDim2.fromOffset(360, 36)
 toggle.Position = UDim2.new(0, 16, 0, 292)
