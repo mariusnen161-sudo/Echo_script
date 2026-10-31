@@ -31,6 +31,138 @@ if logAvailable then
 else
     warn("[Сундук] Madium не предоставил writefile; файл диагностики недоступен.")
 end
+-- BEGIN SESSION MODULE
+local createSessionState=(function()
+-- Настройки и восстановление при штатном Teleport. Не выполняет инжект процесса.
+local function createSessionState(player,http,capabilities,log)
+    local self={file="echo-psx-config-"..tostring(player.UserId)..".json",last=nil,lastWrite=-10}
+    local function sanitize(value)
+        value=type(value)=="table" and value or {}
+        local result={version=1,userId=player.UserId,mode="progression",running=false,
+            autoBoost=true,afk=true,autoStart=true,view={}}
+        if value.mode=="chest" or value.mode=="progression" or value.mode=="local" then result.mode=value.mode end
+        for _,key in ipairs({"running","autoBoost","afk","autoStart"}) do
+            if type(value[key])=="boolean" then result[key]=value[key] end
+        end
+        for _,key in ipairs({"localArea","localWorld"}) do
+            if type(value[key])=="string" and #value[key]<=120 then result[key]=value[key] end
+        end
+        local view=type(value.view)=="table" and value.view or {}
+        for _,key in ipairs({"scale","windowXScale","windowXOffset","windowYScale","windowYOffset","iconX","iconY"}) do
+            local n=view[key]
+            if type(n)=="number" and n==n and math.abs(n)<100000 then result.view[key]=n end
+        end
+        for _,key in ipairs({"animation","collapsed","iconPlaced"}) do
+            if type(view[key])=="boolean" then result.view[key]=view[key] end
+        end
+        return result
+    end
+    local function same(a,b)
+        if type(a)~=type(b) then return false end
+        if type(a)~="table" then return a==b end
+        for k,v in pairs(a) do if not same(v,b[k]) then return false end end
+        for k in pairs(b) do if a[k]==nil then return false end end
+        return true
+    end
+    function self.load()
+        local encoded=player:GetAttribute("EchoPSXResumeConfig")
+        player:SetAttribute("EchoPSXResumeConfig",nil)
+        if type(encoded)~="string" and type(capabilities.read)=="function" then
+            local ok,data=pcall(capabilities.read,self.file)
+            if ok then encoded=data end
+        end
+        if type(encoded)=="string" then
+            local ok,data=pcall(function() return http:JSONDecode(encoded) end)
+            if ok and type(data)=="table" and data.version==1 and data.userId==player.UserId then
+                log("Загружен последний конфиг: "..self.file)
+                return sanitize(data)
+            end
+            log("Конфиг повреждён или относится к другому аккаунту; использованы настройки по умолчанию")
+        end
+        return sanitize({})
+    end
+    function self.save(config,force)
+        local normalized=sanitize(config)
+        if type(capabilities.write)~="function" then self.storage="Недоступна запись файла";return normalized end
+        if not force and (same(normalized,self.last) or os.clock()-self.lastWrite<2) then return normalized end
+        local ok,err=pcall(function() capabilities.write(self.file,http:JSONEncode(normalized)) end)
+        self.lastWrite=os.clock()
+        if ok then self.last=normalized;self.lastWrite=os.clock();self.storage="Конфиг сохраняется" else
+            self.storage="Ошибка записи конфига"
+            if self.writeError~=tostring(err) then log(self.storage..": "..tostring(err));self.writeError=tostring(err) end
+        end
+        return normalized
+    end
+    function self.bootstrap(config)
+        local payload=http:JSONEncode(sanitize(config))
+        return [[
+task.spawn(function()
+    local deadline=os.clock()+120
+    while not game:IsLoaded() and os.clock()<deadline do task.wait(0.5) end
+    local Players=game:GetService("Players")
+    while not Players.LocalPlayer and os.clock()<deadline do task.wait(0.5) end
+    local player=Players.LocalPlayer
+    if not player then warn("[Восстановление] Игрок не загружен");return end
+    local rs=game:GetService("ReplicatedStorage")
+    while os.clock()<deadline do
+        local framework=rs:FindFirstChild("Framework")
+        if framework and framework:FindFirstChild("Library") and player:FindFirstChild("PlayerGui") then break end
+        task.wait(0.5)
+    end
+    local framework=rs:FindFirstChild("Framework")
+    if not framework or not framework:FindFirstChild("Library") then
+        warn("[Восстановление] Это не клиент PSX ивента; запуск отменён");return
+    end
+    local payload=]]..string.format("%q",payload)..[[
+    if type(readfile)=="function" then
+        local readOk,latest=pcall(readfile,]]..string.format("%q",self.file)..[[)
+        if readOk then
+            local valid,data=pcall(function() return game:GetService("HttpService"):JSONDecode(latest) end)
+            if valid and type(data)=="table" and data.version==1 and data.userId==player.UserId then payload=latest end
+        end
+    end
+    local valid,config=pcall(function() return game:GetService("HttpService"):JSONDecode(payload) end)
+    if not valid or config.userId~=player.UserId or not config.running or not config.autoStart then return end
+    if player:GetAttribute("EchoPSXResumeStarted") then return end
+    player:SetAttribute("EchoPSXResumeStarted",true)
+    player:SetAttribute("EchoPSXResumeConfig",payload)
+    local ok,err=pcall(function()
+        loadstring(game:HttpGet("https://raw.githubusercontent.com/mariusnen161-sudo/Echo_script/main/auto-start-standalone.lua"))()
+    end)
+    if not ok then
+        player:SetAttribute("EchoPSXResumeStarted",nil)
+        warn("[Восстановление] Не удалось загрузить скрипт: "..tostring(err))
+    end
+end)
+]]
+    end
+    function self.attach(getConfig)
+        local queued=false
+        if type(capabilities.queue)~="function" then self.resume="queue_on_teleport недоступен"
+        else self.resume="Повторный запуск при Teleport готов" end
+        local connection=player.OnTeleport:Connect(function(state)
+            if state==Enum.TeleportState.Failed then queued=false;return end
+            if state~=Enum.TeleportState.Started and state~=Enum.TeleportState.InProgress then return end
+            local config=self.save(getConfig(),true)
+            if queued or not config.running or not config.autoStart then return end
+            if type(capabilities.queue)~="function" then log("Автовосстановление недоступно: нужен Auto Execute исполнителя");return end
+            local ok,err=pcall(capabilities.queue,self.bootstrap(config))
+            if ok then queued=true;log("Конфиг сохранён; повторный запуск поставлен в очередь Teleport")
+            else log("Ошибка очереди Teleport: "..tostring(err)) end
+        end)
+        return connection
+    end
+    return self
+end
+return createSessionState
+end)()
+-- END SESSION MODULE
+local teleportQueue=type(queue_on_teleport)=="function" and queue_on_teleport or queueonteleport
+if type(teleportQueue)~="function" and type(syn)=="table" then teleportQueue=syn.queue_on_teleport end
+local Session=createSessionState(player,game:GetService("HttpService"),{read=readfile,write=writefile,queue=teleportQueue},function(message)
+    record("[Сессия] "..message);print("[Сессия] "..message)
+end)
+local preferences=Session.load()
 local old = playerGui:FindFirstChild("HeavenChestHelper")
 if old then
     old:SetAttribute("StopReason", "Запущена новая копия скрипта")
@@ -340,6 +472,8 @@ local function createHeavenUI(gui, player, input)
     action(afkCard,"Включить / выключить анти-AFK","shield",16,98,594,38,"afk")
     local logCard=card(pages.Misc,0,261,627,131,"Диагностика","chart")
     local logInfo=label(logCard,"",16,56,593,60,13,Theme.muted)
+    local sessionCard=card(pages.Misc,0,408,627,116,"Восстановление сессии","shield")
+    local sessionInfo=label(sessionCard,"Проверка сохранения настроек…",16,55,593,49,13,Theme.muted)
     heading(pages.Settings,"Settings","Интерфейс и управление скриптом")
     local settings=card(pages.Settings,0,94,627,312,"Настройки","settings")
     label(settings,"Масштаб интерфейса",16,59,290,28,15)
@@ -399,6 +533,32 @@ local function createHeavenUI(gui, player, input)
             iconPointer=nil
         end
     end)
+    function ui.getConfig()
+        return {scale=ui.scale,animation=ui.animation,collapsed=collapsed,iconPlaced=iconPlaced,
+            windowXScale=root.Position.X.Scale,windowXOffset=root.Position.X.Offset,
+            windowYScale=root.Position.Y.Scale,windowYOffset=root.Position.Y.Offset,
+            iconX=restoreIcon.Position.X.Offset,iconY=restoreIcon.Position.Y.Offset}
+    end
+    function ui.applyConfig(config)
+        if type(config)~="table" then return end
+        if type(config.scale)=="number" then ui.scale=math.clamp(config.scale,0.65,1.3) end
+        if type(config.animation)=="boolean" then ui.animation=config.animation end
+        fit();scaleValue.Text=math.floor(ui.scale*100+0.5).."%"
+        animationButton.Text=ui.animation and "Анимации: ВКЛ" or "Анимации: ВЫКЛ"
+        if type(config.windowXScale)=="number" and type(config.windowXOffset)=="number"
+            and type(config.windowYScale)=="number" and type(config.windowYOffset)=="number" then
+            local viewportSize=workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(1280,720)
+            local halfWidth,halfHeight=850*scale.Scale/2,530*scale.Scale/2
+            local x=config.windowXScale*viewportSize.X+config.windowXOffset
+            local y=config.windowYScale*viewportSize.Y+config.windowYOffset
+            root.Position=UDim2.fromOffset(math.clamp(x,halfWidth+8,math.max(halfWidth+8,viewportSize.X-halfWidth-8)),
+                math.clamp(y,halfHeight+8,math.max(halfHeight+8,viewportSize.Y-halfHeight-8)))
+        end
+        if config.iconPlaced and type(config.iconX)=="number" and type(config.iconY)=="number" then
+            restoreIcon.Position=clampIcon(config.iconX,config.iconY);iconPlaced=true
+        end
+        if type(config.collapsed)=="boolean" and config.collapsed~=collapsed then ui.collapse() end
+    end
     function ui.collapse()
         collapsed=not collapsed
         notification.Visible=false
@@ -464,6 +624,7 @@ local function createHeavenUI(gui, player, input)
         local controller=gui.Parent and gui.Parent:FindFirstChild("HeavenChestAutoStart")
         autoButton.Text=controller and (controller:GetAttribute("AutoEnabled") and "Автозапуск: ВКЛ" or "Автозапуск: ВЫКЛ") or "Автозапуск не подключён"
         logInfo.Text=state.logFile or "Файл диагностики недоступен"
+        sessionInfo.Text=state.sessionText or "Восстановление сессии не подключено"
         if library and os.clock()-lastRead>=2 then
             lastRead=os.clock()
             local ok,data=pcall(function() return library.Save.Get() end)
@@ -511,15 +672,26 @@ local collapse = UI.collapse
 local running, alive = false, true
 local farmMode,progressionState,progression = "progression",nil,nil
 local farmAdapter,localArea,localWorld
+farmMode=preferences.mode;running=preferences.running
+localArea,localWorld=preferences.localArea,preferences.localWorld
 local controllerState=playerGui:FindFirstChild("HeavenChestAutoStart")
 if controllerState then
     local savedMode=controllerState:GetAttribute("FarmMode")
     if savedMode=="chest" or savedMode=="progression" or savedMode=="local" then farmMode=savedMode end
-    localArea=controllerState:GetAttribute("LocalArea")
-    localWorld=controllerState:GetAttribute("LocalWorld")
-    running=controllerState:GetAttribute("FarmRunning")==true
+    local savedArea=controllerState:GetAttribute("LocalArea")
+    local savedWorld=controllerState:GetAttribute("LocalWorld")
+    local savedRunning=controllerState:GetAttribute("FarmRunning")
+    if type(savedArea)=="string" then localArea=savedArea end
+    if type(savedWorld)=="string" then localWorld=savedWorld end
+    if type(savedRunning)=="boolean" then running=savedRunning end
 end
 local autoBoostEnabled, afkEnabled = true, true
+autoBoostEnabled,afkEnabled=preferences.autoBoost,preferences.afk
+UI.applyConfig(preferences.view)
+if controllerState then
+    controllerState:SetAttribute("AutoEnabled",preferences.autoStart)
+    controllerState:SetAttribute("RequestedEnabled",preferences.autoStart)
+end
 local uiStartedAt = os.clock()
 local boostText = "Triple Coins: ожидание проверки"
 local afkText = "Анти-AFK: ожидание проверки"
@@ -536,8 +708,20 @@ local function observeChest(state, present, now)
         end
     end
 end
-local keyConnection, idleConnection
+local keyConnection, idleConnection, teleportConnection
 local lastStatus, lastStatusAt = "Инициализация", os.clock()
+local function currentConfig()
+    local controller=playerGui:FindFirstChild("HeavenChestAutoStart")
+    local autoStart=preferences.autoStart
+    if controller then
+        local requested=controller:GetAttribute("RequestedEnabled")
+        if type(requested)=="boolean" then autoStart=requested
+        else autoStart=controller:GetAttribute("AutoEnabled")~=false end
+    end
+    return {version=1,userId=player.UserId,mode=farmMode,running=running,localArea=localArea,localWorld=localWorld,
+        autoBoost=autoBoostEnabled,afk=afkEnabled,autoStart=autoStart,view=UI.getConfig()}
+end
+teleportConnection=Session.attach(currentConfig)
 local function status(text)
     lastStatus, lastStatusAt = text, os.clock()
     local controller=playerGui:FindFirstChild("HeavenChestAutoStart")
@@ -546,9 +730,11 @@ local function status(text)
         controller:SetAttribute("LocalArea",localArea);controller:SetAttribute("LocalWorld",localWorld)
     end
     if alive then
+        Session.save(currentConfig(),false)
         UI.update({message=text, running=running, autoBoost=autoBoostEnabled, afkEnabled=afkEnabled,
             boostText=boostText, afkText=afkText, elapsed=os.clock()-uiStartedAt,
-            logFile=logAvailable and logFile or "Файл диагностики недоступен",mode=farmMode,progression=progressionState,localArea=localArea})
+            logFile=logAvailable and logFile or "Файл диагностики недоступен",mode=farmMode,progression=progressionState,localArea=localArea,
+            sessionText=(Session.storage or "Конфиг: ожидание записи").."\n"..tostring(Session.resume)})
     end
 end
 UI.bind("farm",function()
@@ -590,11 +776,15 @@ UI.bind("auto",function()
 end)
 local function stop()
     if not alive then return end
+    running=false
+    local stoppedConfig=currentConfig();stoppedConfig.autoStart=false
+    Session.save(stoppedConfig,true)
     gui:SetAttribute("StopReason", "Остановка подтверждена кнопкой")
     alive = false
     if progression then progression.cancel() end
     if keyConnection then keyConnection:Disconnect() end
     if idleConnection then idleConnection:Disconnect() end
+    if teleportConnection then teleportConnection:Disconnect() end
     if gui.Parent then gui:Destroy() end
 end
 gui.Destroying:Connect(function()
@@ -610,6 +800,7 @@ gui.Destroying:Connect(function()
     if progression then progression.cancel() end
     if keyConnection then keyConnection:Disconnect() end
     if idleConnection then idleConnection:Disconnect() end
+    if teleportConnection then teleportConnection:Disconnect() end
 end)
 task.spawn(function()
     while alive do
@@ -1480,8 +1671,19 @@ else
 end
 ]====]
 assert(type(loadstring) == "function", "Автозапуск требует loadstring в Madium")
-local player = game:GetService("Players").LocalPlayer
-assert(player, "Дождитесь входа в игру")
+local players=game:GetService("Players")
+local readyUntil=os.clock()+120
+while not players.LocalPlayer and os.clock()<readyUntil do task.wait(0.5) end
+local player=players.LocalPlayer
+assert(player, "Игрок не загрузился за 120 секунд")
+local replicated=game:GetService("ReplicatedStorage")
+while os.clock()<readyUntil do
+    local framework=replicated:FindFirstChild("Framework")
+    if framework and framework:FindFirstChild("Library") then break end
+    task.wait(0.5)
+end
+local framework=replicated:FindFirstChild("Framework")
+assert(framework and framework:FindFirstChild("Library"),"Клиент PSX ивента не загрузился; автозапуск отменён")
 local playerGui = player:WaitForChild("PlayerGui", 30)
 assert(playerGui, "Не найден интерфейс игрока")
 -- Проверяем файл до запуска контроллера.
